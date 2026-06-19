@@ -50,30 +50,41 @@ class AddDialog(QDialog):
 
  #========================================#
 class ViewDialog(QDialog):
-    def __init__(self, title, headers, data):
+
+    def __init__(self, title, headers, kind):
         super().__init__()
         self.setWindowTitle(title)
         self.resize(800, 500)
+        self.kind = kind
+        self.headers = headers
+
+        if kind == "college":
+            self.file = main.COLLEGE_FILE
+            self.fields = ["Code", "Name"]
+        else:
+            self.file = main.PROGRAM_FILE
+            self.fields = ["Code", "Name", "College"]
 
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(f"Search {kind}s...")
+        self.search.textChanged.connect(self.load_data)
+        layout.addWidget(self.search)
+
         self.table = QTableWidget()
         self.table.setColumnCount(len(headers))
         self.table.setHorizontalHeaderLabels(headers)
-        self.table.setRowCount(len(data))
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(True)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
 
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.right_click)
 
-        for r, row in enumerate(data):
-            for c, value in enumerate(row):
-                self.table.setItem(r, c, QTableWidgetItem(value))
-
         header = self.table.horizontalHeader()
-
         if len(headers) == 3:
             header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
             header.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -82,6 +93,40 @@ class ViewDialog(QDialog):
             header.setSectionResizeMode(QHeaderView.Stretch)
 
         layout.addWidget(self.table)
+
+        self.count_label = QLabel()
+        self.count_label.setStyleSheet("font-size: 12px; color: #555;")
+        layout.addWidget(self.count_label)
+
+        self.load_data()
+
+    def load_data(self):
+        text = self.search.text().lower()
+        data = main.read_csv(self.file)
+
+        filtered = [r for r in data if text in " ".join(r).lower()]
+
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(len(filtered))
+
+        for r, row in enumerate(filtered):
+            for c, value in enumerate(row):
+                self.table.setItem(r, c, QTableWidgetItem(value))
+
+        self.table.setSortingEnabled(True)
+
+        if text:
+            self.count_label.setText(f"Showing {len(filtered)} of {len(data)} {self.kind}s")
+        else:
+            self.count_label.setText(f"Total {self.kind.capitalize()}s: {len(data)}")
+
+    def get_real_index(self, code):
+        """Map a displayed row's code back to its true index in the CSV."""
+        data = main.read_csv(self.file)
+        for i, row in enumerate(data):
+            if row[0] == code:
+                return i
+        return None
 
     def right_click(self, pos):
         row = self.table.currentRow()
@@ -103,52 +148,57 @@ class ViewDialog(QDialog):
                 self.delete_row(row)
 
     def delete_row(self, row):
-        title = self.windowTitle()
+        code = self.table.item(row, 0).text()
+        real_index = self.get_real_index(code)
 
-        if "College" in title:
-            rows = main.read_csv("colleges.csv")
-            rows.pop(row)
-            main.write_csv("colleges.csv", rows)
-
-        elif "Program" in title:
-            rows = main.read_csv("programs.csv")
-            rows.pop(row)
-            main.write_csv("programs.csv", rows)
-
-        self.table.removeRow(row)
-
-    def edit_row(self, row):
-        title = self.windowTitle()
-
-        if "College" in title:
-            file = "colleges.csv"
-            fields = ["Code", "Name"]
-
-        elif "Program" in title:
-            file = "programs.csv"
-            fields = ["Code", "Name", "College"]
-
-        else:
+        if real_index is None:
+            QMessageBox.warning(self, "Error", "Entry no longer exists.")
+            self.load_data()
             return
 
-        data = main.read_csv(file)
+        if self.kind == "college":
+            ok, msg = main.delete_college(real_index)
+        else:
+            ok, msg = main.delete_program(real_index)
 
-        dlg = AddDialog("Edit Entry", fields, data[row])
+        if not ok:
+            QMessageBox.warning(self, "Delete Failed", msg)
+            return
+
+        self.load_data()
+
+    def edit_row(self, row):
+        code = self.table.item(row, 0).text()
+        real_index = self.get_real_index(code)
+
+        if real_index is None:
+            QMessageBox.warning(self, "Error", "Entry no longer exists.")
+            self.load_data()
+            return
+
+        data = main.read_csv(self.file)
+        dlg = AddDialog("Edit Entry", self.fields, data[real_index])
 
         if dlg.exec_():
             new_data = dlg.get_data()
-            data[row] = new_data
-            main.write_csv(file, data)
 
-            for c, v in enumerate(new_data):
-                self.table.setItem(row, c, QTableWidgetItem(v))
+            if self.kind == "college":
+                ok, msg = main.update_college(real_index, new_data)
+            else:
+                ok, msg = main.update_program(real_index, new_data)
+
+            if not ok:
+                QMessageBox.warning(self, "Update Failed", msg)
+                return
+
+            self.load_data()
 
 
  #========================================#
 class StudentApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Student CSV System")
+        self.setWindowTitle("Simple Student Information System")
         self.setFixedSize(1200, 900)
         self.edit_id = None
         self.init_ui()
@@ -174,30 +224,38 @@ class StudentApp(QWidget):
         self.id.setPlaceholderText("0000-0000")
         self.fn = QLineEdit()
         self.ln = QLineEdit()
-        self.program = QLineEdit()
         self.year = QLineEdit()
+
+        self.program = QComboBox()
+        self.program.setMinimumHeight(28)
+        self.refresh_program_dropdown()
 
         self.gender = QComboBox()
         self.gender.addItem("Select Gender")
         self.gender.addItems(["Male", "Female", "Non-binary"])
         self.gender.model().item(0).setEnabled(False)
 
-        fields = [
+        text_fields = [
             ("Student ID", self.id),
             ("First Name", self.fn),
             ("Last Name", self.ln),
-            ("Program Code", self.program),
-            ("Year", self.year),
         ]
 
-        for lbl, w in fields:
+        for lbl, w in text_fields:
             label = QLabel(lbl)
             label.setMinimumHeight(20)
-
             w.setMinimumHeight(28)
-
             input_layout.addWidget(label)
             input_layout.addWidget(w)
+
+        input_layout.addWidget(QLabel("Program Code"))
+        input_layout.addWidget(self.program)
+
+        year_label = QLabel("Year")
+        year_label.setMinimumHeight(20)
+        self.year.setMinimumHeight(28)
+        input_layout.addWidget(year_label)
+        input_layout.addWidget(self.year)
             
         self.add_btn = QPushButton("Add Student")
         self.add_btn.setMinimumHeight(28)
@@ -246,22 +304,22 @@ class StudentApp(QWidget):
         )
         
         self.table.horizontalHeader().setMinimumHeight(50)
-        self.table.verticalHeader().setDefaultSectionSize(28) 
+        self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSortingEnabled(True)
         self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setAlternatingRowColors(True)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.table_menu)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Stretch)
-        v_header = self.table.verticalHeader()
-        v_header.setSectionResizeMode(QHeaderView.Fixed)
-        v_header.setDefaultSectionSize(36)      
+        self.total_label = QLabel("Total Students: 0")
+        self.total_label.setStyleSheet("font-size: 12px; color: #555;")
+
         right.addWidget(self.search)
         right.addWidget(self.table)
+        right.addWidget(self.total_label)
 
         root.addLayout(left, 1)
         root.addLayout(right, 2)
@@ -278,6 +336,22 @@ class StudentApp(QWidget):
 
         self.apply_style()
         self.load_students()
+
+ #========================================#
+    def refresh_program_dropdown(self):
+        """Reload the program combo from programs.csv (code as data, 'CODE – Name' as label)."""
+        current = self.program.currentData()
+        self.program.clear()
+        self.program.addItem("Select Program", userData=None)
+        self.program.model().item(0).setEnabled(False)
+        for row in main.read_csv(main.PROGRAM_FILE):
+            code, name = row[0], row[1]
+            self.program.addItem(f"{code} – {name}", userData=code)
+        # restore selection if editing
+        if current:
+            idx = self.program.findData(current)
+            if idx >= 0:
+                self.program.setCurrentIndex(idx)
 
  #========================================#
     def apply_style(self):
@@ -348,12 +422,19 @@ class StudentApp(QWidget):
             dlg = AddDialog("Add Program", ["Code", "Name", "College Code"])
             if dlg.exec_():
                 main.add_program(dlg.get_data())
+                self.refresh_program_dropdown()
 
         elif action == view_colleges:
-            ViewDialog("Colleges List", ["Code", "Name"], main.read_csv("colleges.csv")).exec_()
+            dlg = ViewDialog("Colleges List", ["Code", "Name"], "college")
+            dlg.exec_()
+            self.refresh_program_dropdown()
+            self.load_students()
 
         elif action == view_programs:
-            ViewDialog("Programs List", ["Code", "Name", "College"], main.read_csv("programs.csv")).exec_()
+            dlg = ViewDialog("Programs List", ["Code", "Name", "College"], "program")
+            dlg.exec_()
+            self.refresh_program_dropdown()
+            self.load_students()
 
  #========================================#
     def table_menu(self, pos):
@@ -387,7 +468,7 @@ class StudentApp(QWidget):
 
     def load_students(self):
         text = self.search.text().lower()
-        data = main.read_csv("students.csv")
+        data = main.read_csv(main.STUDENT_FILE)
 
         filtered = [r for r in data if text in " ".join(r).lower()]
 
@@ -400,13 +481,23 @@ class StudentApp(QWidget):
 
         self.table.setSortingEnabled(True)
 
+        if text:
+            self.total_label.setText(f"Showing {len(filtered)} of {len(data)} students")
+        else:
+            self.total_label.setText(f"Total Students: {len(data)}")
+
     def edit_student(self, row):
         self.edit_id = self.table.item(row, 0).text()
 
         self.id.setText(self.table.item(row, 0).text())
         self.fn.setText(self.table.item(row, 1).text())
         self.ln.setText(self.table.item(row, 2).text())
-        self.program.setText(self.table.item(row, 3).text())
+
+        program_code = self.table.item(row, 3).text()
+        idx = self.program.findData(program_code)
+        if idx >= 0:
+            self.program.setCurrentIndex(idx)
+
         self.year.setText(self.table.item(row, 4).text())
 
         gender = self.table.item(row, 5).text()
@@ -423,7 +514,7 @@ class StudentApp(QWidget):
             self.id.text(),
             self.fn.text(),
             self.ln.text(),
-            self.program.text(),
+            self.program.currentData(),
             self.year.text(),
             self.gender.currentText()
         ]
@@ -470,8 +561,9 @@ class StudentApp(QWidget):
             self.add_btn.setText("Add Student")
 
     def clear_inputs(self):
-        for w in [self.id, self.fn, self.ln, self.program, self.year]:
+        for w in [self.id, self.fn, self.ln, self.year]:
             w.clear()
+        self.program.setCurrentIndex(0)
         self.gender.setCurrentIndex(0)
 
     def show_details(self):
@@ -501,4 +593,3 @@ if __name__ == "__main__":
     win = StudentApp()
     win.show()
     sys.exit(app.exec_())
-
