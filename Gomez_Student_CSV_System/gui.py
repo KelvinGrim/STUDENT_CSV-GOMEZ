@@ -49,14 +49,18 @@ class AddDialog(QDialog):
 
 
  #========================================#
-class ViewDialog(QDialog):
-
-    def __init__(self, title, headers, kind):
+class EntryListPanel(QWidget):
+    """
+    Reusable list+search+edit/delete panel for colleges/programs.
+    Used standalone inside ViewDialog, and side-by-side with an add-form
+    inside ManageDialog.
+    kind: "college" or "program"
+    """
+    def __init__(self, headers, kind, on_change=None):
         super().__init__()
-        self.setWindowTitle(title)
-        self.resize(800, 500)
         self.kind = kind
         self.headers = headers
+        self.on_change = on_change  # optional callback fired after add/edit/delete
 
         if kind == "college":
             self.file = main.COLLEGE_FILE
@@ -102,7 +106,14 @@ class ViewDialog(QDialog):
 
     def load_data(self):
         text = self.search.text().lower()
-        data = main.read_csv(self.file)
+
+        try:
+            data = main.read_csv(self.file)
+        except RuntimeError as e:
+            QMessageBox.critical(self, "Error", str(e))
+            self.table.setRowCount(0)
+            self.count_label.setText("")
+            return
 
         filtered = [r for r in data if text in " ".join(r).lower()]
 
@@ -122,9 +133,14 @@ class ViewDialog(QDialog):
 
     def get_real_index(self, code):
         """Map a displayed row's code back to its true index in the CSV."""
-        data = main.read_csv(self.file)
+        try:
+            data = main.read_csv(self.file)
+        except RuntimeError as e:
+            QMessageBox.critical(self, "Error", str(e))
+            return None
+
         for i, row in enumerate(data):
-            if row[0] == code:
+            if row and row[0] == code:
                 return i
         return None
 
@@ -156,16 +172,22 @@ class ViewDialog(QDialog):
             self.load_data()
             return
 
-        if self.kind == "college":
-            ok, msg = main.delete_college(real_index)
-        else:
-            ok, msg = main.delete_program(real_index)
+        try:
+            if self.kind == "college":
+                ok, msg = main.delete_college(real_index)
+            else:
+                ok, msg = main.delete_program(real_index)
+        except RuntimeError as e:
+            QMessageBox.critical(self, "Error", str(e))
+            return
 
         if not ok:
             QMessageBox.warning(self, "Delete Failed", msg)
             return
 
         self.load_data()
+        if self.on_change:
+            self.on_change()
 
     def edit_row(self, row):
         code = self.table.item(row, 0).text()
@@ -176,22 +198,139 @@ class ViewDialog(QDialog):
             self.load_data()
             return
 
-        data = main.read_csv(self.file)
+        try:
+            data = main.read_csv(self.file)
+        except RuntimeError as e:
+            QMessageBox.critical(self, "Error", str(e))
+            return
+
         dlg = AddDialog("Edit Entry", self.fields, data[real_index])
 
         if dlg.exec_():
             new_data = dlg.get_data()
 
-            if self.kind == "college":
-                ok, msg = main.update_college(real_index, new_data)
-            else:
-                ok, msg = main.update_program(real_index, new_data)
+            try:
+                if self.kind == "college":
+                    ok, msg = main.update_college(real_index, new_data)
+                else:
+                    ok, msg = main.update_program(real_index, new_data)
+            except RuntimeError as e:
+                QMessageBox.critical(self, "Error", str(e))
+                return
 
             if not ok:
                 QMessageBox.warning(self, "Update Failed", msg)
                 return
 
             self.load_data()
+            if self.on_change:
+                self.on_change()
+
+
+ #========================================#
+class ViewDialog(QDialog):
+    """Standalone view window — thin wrapper around EntryListPanel."""
+    def __init__(self, title, headers, kind, on_change=None):
+        super().__init__()
+        self.setWindowTitle(title)
+        self.resize(800, 500)
+
+        layout = QVBoxLayout(self)
+        self.panel = EntryListPanel(headers, kind, on_change=on_change)
+        layout.addWidget(self.panel)
+
+
+ #========================================#
+class ManageDialog(QDialog):
+    """
+    Combined Add + View dialog: existing entries (with edit/delete) on the
+    left, an add-form for a new entry on the right. Adding a row refreshes
+    the list immediately so duplicates/typos are visible right away.
+    """
+    def __init__(self, kind, on_change=None):
+        super().__init__()
+        self.kind = kind
+        self.on_change = on_change
+
+        if kind == "college":
+            self.setWindowTitle("Manage Colleges")
+            headers = ["Code", "Name"]
+            self.fields = ["Code", "Name"]
+        else:
+            self.setWindowTitle("Manage Programs")
+            headers = ["Code", "Name", "College"]
+            self.fields = ["Code", "Name", "College Code"]
+
+        self.resize(900, 500)
+
+        root = QHBoxLayout(self)
+
+        # Left: existing entries, full edit/delete via right-click
+        self.panel = EntryListPanel(headers, kind, on_change=self._handle_change)
+        root.addLayout(self._wrap_with_label(f"Existing {kind.capitalize()}s", self.panel), 2)
+
+        # Right: add-new-entry form
+        form_box = QVBoxLayout()
+        form_label = QLabel(f"Add {kind.capitalize()}")
+        form_label.setStyleSheet("font-weight: bold;")
+        form_box.addWidget(form_label)
+
+        self.inputs = {}
+        form_layout = QFormLayout()
+        form_layout.setSpacing(12)
+        for field in self.fields:
+            le = QLineEdit()
+            le.setMinimumHeight(32)
+            self.inputs[field] = le
+            form_layout.addRow(field, le)
+        form_box.addLayout(form_layout)
+
+        add_btn = QPushButton(f"Add {kind.capitalize()}")
+        add_btn.clicked.connect(self.add_entry)
+        form_box.addWidget(add_btn)
+        form_box.addStretch()
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        form_box.addWidget(close_btn)
+
+        root.addLayout(form_box, 1)
+
+    def _wrap_with_label(self, text, widget):
+        box = QVBoxLayout()
+        label = QLabel(text)
+        label.setStyleSheet("font-weight: bold;")
+        box.addWidget(label)
+        box.addWidget(widget)
+        return box
+
+    def _handle_change(self):
+        if self.on_change:
+            self.on_change()
+
+    def add_entry(self):
+        data = [w.text().strip() for w in self.inputs.values()]
+
+        try:
+            if self.kind == "college":
+                ok, msg = main.add_college(data)
+            else:
+                ok, msg = main.add_program(data)
+        except RuntimeError as e:
+            QMessageBox.critical(self, "Error", str(e))
+            return
+
+        if not ok:
+            QMessageBox.warning(self, f"Add {self.kind.capitalize()} Failed", msg)
+            return
+
+        for w in self.inputs.values():
+            w.clear()
+
+        self.panel.load_data()
+        self._handle_change()
+
+
 
 
  #========================================#
@@ -344,7 +483,16 @@ class StudentApp(QWidget):
         self.program.clear()
         self.program.addItem("Select Program", userData=None)
         self.program.model().item(0).setEnabled(False)
-        for row in main.read_csv(main.PROGRAM_FILE):
+
+        try:
+            rows = main.read_csv(main.PROGRAM_FILE)
+        except RuntimeError as e:
+            QMessageBox.critical(self, "Error", str(e))
+            return
+
+        for row in rows:
+            if len(row) < 2:
+                continue
             code, name = row[0], row[1]
             self.program.addItem(f"{code} – {name}", userData=code)
         # restore selection if editing
@@ -414,15 +562,16 @@ class StudentApp(QWidget):
         action = menu.exec_(self.menu_btn.mapToGlobal(self.menu_btn.rect().bottomLeft()))
 
         if action == add_college:
-            dlg = AddDialog("Add College", ["Code", "Name"])
-            if dlg.exec_():
-                main.add_college(dlg.get_data())
+            dlg = ManageDialog("college", on_change=self.refresh_program_dropdown)
+            dlg.exec_()
+            self.refresh_program_dropdown()
+            self.load_students()
 
         elif action == add_program:
-            dlg = AddDialog("Add Program", ["Code", "Name", "College Code"])
-            if dlg.exec_():
-                main.add_program(dlg.get_data())
-                self.refresh_program_dropdown()
+            dlg = ManageDialog("program", on_change=self.refresh_program_dropdown)
+            dlg.exec_()
+            self.refresh_program_dropdown()
+            self.load_students()
 
         elif action == view_colleges:
             dlg = ViewDialog("Colleges List", ["Code", "Name"], "college")
@@ -435,6 +584,7 @@ class StudentApp(QWidget):
             dlg.exec_()
             self.refresh_program_dropdown()
             self.load_students()
+
 
  #========================================#
     def table_menu(self, pos):
@@ -459,7 +609,13 @@ class StudentApp(QWidget):
 
             elif action == delete:
                 if QMessageBox.question(self, "Confirm", "Delete this student?") == QMessageBox.Yes:
-                    main.delete_student(real_index)
+                    try:
+                        ok, msg = main.delete_student(real_index)
+                    except RuntimeError as e:
+                        QMessageBox.critical(self, "Error", str(e))
+                        return
+                    if not ok:
+                        QMessageBox.warning(self, "Delete Failed", msg)
                     self.load_students()
 
         else:
@@ -468,7 +624,14 @@ class StudentApp(QWidget):
 
     def load_students(self):
         text = self.search.text().lower()
-        data = main.read_csv(main.STUDENT_FILE)
+
+        try:
+            data = main.read_csv(main.STUDENT_FILE)
+        except RuntimeError as e:
+            QMessageBox.critical(self, "Error", str(e))
+            self.table.setRowCount(0)
+            self.total_label.setText("")
+            return
 
         filtered = [r for r in data if text in " ".join(r).lower()]
 
@@ -521,8 +684,11 @@ class StudentApp(QWidget):
 
 
         if self.edit_id is None:
-            ok, msg = main.add_student(data)
-
+            try:
+                ok, msg = main.add_student(data)
+            except RuntimeError as e:
+                QMessageBox.critical(self, "Error", str(e))
+                return
 
         else:
             idx = self.get_real_index(self.edit_id)
@@ -542,7 +708,11 @@ class StudentApp(QWidget):
                 self.load_students()
                 return
 
-            ok, msg = main.update_student(idx, data)
+            try:
+                ok, msg = main.update_student(idx, data)
+            except RuntimeError as e:
+                QMessageBox.critical(self, "Error", str(e))
+                return
 
 
         if not ok:
@@ -580,9 +750,14 @@ class StudentApp(QWidget):
             self.details[key].setText(f"{key}: {item.text() if item else ''}")
 
     def get_real_index(self, student_id):
-        data = main.read_csv("students.csv")
+        try:
+            data = main.read_csv("students.csv")
+        except RuntimeError as e:
+            QMessageBox.critical(self, "Error", str(e))
+            return None
+
         for i, row in enumerate(data):
-            if row[0] == student_id:
+            if row and row[0] == student_id:
                 return i
         return None
 
@@ -590,6 +765,10 @@ class StudentApp(QWidget):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    win = StudentApp()
+    try:
+        win = StudentApp()
+    except RuntimeError as e:
+        QMessageBox.critical(None, "Fatal Error", f"The application could not start:\n{e}")
+        sys.exit(1)
     win.show()
     sys.exit(app.exec_())
