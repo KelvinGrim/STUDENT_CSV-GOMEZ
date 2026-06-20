@@ -150,3 +150,108 @@ def add_program(data):
     rows.append(data)
     write_csv(PROGRAM_FILE, rows)
     return True, ""
+def update_college(index, data):
+    if any(not d.strip() for d in data):
+        return False, "All fields are required"
+
+    rows = read_csv(COLLEGE_FILE)
+    if not (0 <= index < len(rows)):
+        return False, "Invalid index"
+
+   
+    for i, row in enumerate(rows):
+        if i != index and row[0] == data[0]:
+            return False, "College code already exists"
+            
+    old_code = rows[index][0]
+    new_code = data[0]
+
+    rows[index] = data
+    write_csv(COLLEGE_FILE, rows)
+
+
+    if old_code != new_code:
+        prog_rows = read_csv(PROGRAM_FILE)
+        changed = False
+        for r in prog_rows:
+            if r[2] == old_code:
+                r[2] = new_code
+                changed = True
+        if changed:
+            write_csv(PROGRAM_FILE, prog_rows)
+            
+    return True, ""
+
+
+def update_program(index, data):
+    if any(not d.strip() for d in data):
+        return False, "All fields are required"
+
+    if not college_exists(data[2]):
+        return False, "College code does not exist"
+
+    rows = read_csv(PROGRAM_FILE)
+    if not (0 <= index < len(rows)):
+        return False, "Invalid index"
+
+
+    for i, row in enumerate(rows):
+        if i != index and row[0] == data[0]:
+            return False, "Program code already exists"
+            
+    old_code = rows[index][0]
+    new_code = data[0]
+
+    rows[index] = data
+    write_csv(PROGRAM_FILE, rows)
+
+
+    if old_code != new_code:
+        stu_rows = read_csv(STUDENT_FILE)
+        changed = False
+        for r in stu_rows:
+            if r[3] == old_code:
+                r[3] = new_code
+                changed = True
+        if changed:
+            write_csv(STUDENT_FILE, stu_rows)
+
+    return True, ""
+
+
+def delete_college(index):
+    rows = read_csv(COLLEGE_FILE)
+    if not (0 <= index < len(rows)):
+        return False, "Invalid index"
+    
+ 
+    college_code = rows[index][0]
+    
+
+    prog_rows = read_csv(PROGRAM_FILE)
+    if any(p[2] == college_code for p in prog_rows):
+        return False, f"Cannot delete '{college_code}': There are programs currently assigned to this college. Please reassign or delete them first."
+
+
+    rows.pop(index)
+    write_csv(COLLEGE_FILE, rows)
+    return True, ""
+
+
+def delete_program(index):
+    rows = read_csv(PROGRAM_FILE)
+    if not (0 <= index < len(rows)):
+        return False, "Invalid index"
+    
+
+    program_code = rows[index][0]
+    
+
+    student_rows = read_csv(STUDENT_FILE)
+    if any(s[3] == program_code for s in student_rows):
+        return False, f"Cannot delete '{program_code}': There are students currently enrolled in this program. Please reassign or delete them first."
+
+
+    rows.pop(index)
+    write_csv(PROGRAM_FILE, rows)
+    return True, ""
